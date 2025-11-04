@@ -13,7 +13,7 @@ from PIL import Image
 import traceback
 import numpy as np
 
-from easyofd.ofd import OFD
+from fastofd.ofd import OFD
 
 if __name__ == "__main__":
     output_path = "F:\code\ofd2pdf"

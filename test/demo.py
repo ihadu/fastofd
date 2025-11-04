@@ -12,14 +12,14 @@ import sys
 from PIL import Image
 from PIL.Image import Image as ImageClass
 
-project_dir = os.path.join(os.path.dirname(os.getcwd()), "easyofd")
+project_dir = os.path.join(os.path.dirname(os.getcwd()), "fastofd")
 pkg_dir = os.path.dirname(os.getcwd())
 print(project_dir)
 print(pkg_dir)
 sys.path.insert(0, project_dir)
 sys.path.insert(0, pkg_dir)
 
-from easyofd.ofd import OFD
+from fastofd.ofd import OFD
 
 
 # 
@@ -41,7 +41,7 @@ def test_img2(dir_path):
         f.write(ofdbytes)
 
 
-def test_ofd2(file_path):
+def test_ofd2(file_path, output_dir=None):
     """
     ofd2pdf
     ofd2img
@@ -55,15 +55,25 @@ def test_ofd2(file_path):
     ofd.read(ofdb64, save_xml=True, xml_name=f"{file_prefix}_xml")  # 读取ofdb64
     # print("ofd.data", ofd.data) # ofd.data 为程序解析结果
     pdf_bytes = ofd.to_pdf()  # 转pdf
-    img_np = ofd.to_jpg()  # 转图片
+    # img_np = ofd.to_jpg()  # 转图片
     ofd.del_data()
 
-    with open(f"{file_prefix}.pdf", "wb") as f:
+    # 确定输出路径
+    if output_dir:
+        # 确保输出目录存在
+        os.makedirs(output_dir, exist_ok=True)
+        output_file = os.path.join(output_dir, f"{file_prefix}.pdf")
+    else:
+        output_file = f"{file_prefix}.pdf"
+
+    with open(output_file, "wb") as f:
         f.write(pdf_bytes)
 
-    for idx, img in enumerate(img_np):
-        # im = Image.fromarray(img)
-        img.save(f"{file_prefix}_{idx}.jpg")
+    # 处理图片输出（如果需要）
+    # if img_np:
+    #     for idx, img in enumerate(img_np):
+    #         img_path = os.path.join(output_dir, f"{file_prefix}_{idx}.jpg") if output_dir else f"{file_prefix}_{idx}.jpg"
+    #         img.save(img_path)
 
 
 def test_pdf2(file_path):
@@ -86,17 +96,27 @@ def test_pdf2(file_path):
 
 if __name__ == "__main__":
 
-    file_path = rf"F:\opensource\easyofd\test\data\滴滴电子发票C.ofd"
-    # file_path = r"data/2.ofd"
-    if sys.argv[1] == "ofd2":
-        test_ofd2(file_path)
-    elif sys.argv[1] == "pdf2":
-        test_pdf2(file_path)
-    elif sys.argv[1] == "img2":
-        test_img2(file_path)
-    else:
-        test_ofd2(file_path)
+    file_path = rf"/Volumes/PSSD/特殊OFD/大OFD/金晟建设集团有限公司04整本响应文件 (12)(1).ofd"
+    # 指定输出目录为当前目录下的output文件夹
+    output_dir = os.path.join(os.getcwd(), "output")
+    test_ofd2(file_path, output_dir)
+
+    # root_dir = r"/Volumes/PSSD/新ofd"
+    # for dirpath, dirnames, filenames in os.walk(root_dir):
+    #     for fn in filenames:
+    #         if fn.lower().endswith(".ofd"):
+    #             file_path = os.path.join(dirpath, fn)
+    #             # 指定输出目录为当前目录下的output文件夹
+    #             output_dir = os.path.join(os.getcwd(), "output")
+    #             try:
+    #                 print(f"Converting: {file_path}")
+    #                 test_ofd2(file_path, output_dir)    
+    #             except Exception as e:
+    #                 print(f"Failed: {file_path} -> {e}")
 
     # data = ofd.data
     # json.dump(data,open("data.json","w",encoding="utf-8"),ensure_ascii=False,indent=4)
     # print(ofd.data)
+
+
+

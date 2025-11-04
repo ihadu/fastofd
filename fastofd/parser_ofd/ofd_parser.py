@@ -9,7 +9,7 @@
 import os
 import sys
 
-from easyofd.parser_ofd.file_ofd_parser import OFDFileParser
+from fastofd.parser_ofd.file_ofd_parser import OFDFileParser
 
 sys.path.insert(0, "..")
 

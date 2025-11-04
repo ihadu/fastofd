@@ -15,19 +15,26 @@ class PublicResFileParser(FileParserBase):
     """
 
     def normalize_font_name(self, font_name):
-        """将字体名称规范化，例如 'Times New Roman Bold' -> 'TimesNewRoman-Bold'"""
-        # 替换空格为无，并将样式（Bold/Italic等）用连字符连接
-        if not isinstance(font_name,str):
+        """将字体名称规范化，并过滤异常值（例如 url、邮箱等）"""
+        if not isinstance(font_name, str):
             return ""
-        normalized = font_name.replace(' ', '')
-        # 处理常见的样式后缀
-        for style in ['Bold', 'Italic', 'Regular', 'Light', 'Medium', ]:
+        name = font_name.strip()
+        lower = name.lower()
+        # 过滤明显不是字体名的内容
+        if ("http://" in lower) or ("https://" in lower) or ("mailto:" in lower):
+            return ""
+        if ":" in name or "@" in name:  # 包含协议/邮箱符号
+            return ""
+        if len(name) > 80:
+            return ""
+        # 规范化空格和样式后缀
+        normalized = name.replace(' ', '')
+        for style in ['Bold', 'Italic', 'Regular', 'Light', 'Medium']:
             if style in normalized:
                 normalized = normalized.replace(style, f'-{style}')
-
-        # todo 特殊字体名规范 后续存在需要完善
-        if normalized ==  "TimesNewRoman" :
-            normalized = normalized.replace("TimesNewRoman","Times-Roman")
+        # 特殊映射
+        if normalized == "TimesNewRoman":
+            normalized = normalized.replace("TimesNewRoman", "Times-Roman")
         return normalized
 
     def __call__(self):

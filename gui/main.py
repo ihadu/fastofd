@@ -13,7 +13,7 @@ sys.path.insert(0,lib_path)
 from PIL import Image
 from PyQt6.QtWidgets import QApplication, QWidget, QMainWindow, QDialog,QMessageBox
 from PyQt6 import QtCore, QtGui, QtWidgets
-from easyofd import OFD
+from fastofd import OFD
 
 class Ui_MainWindow(object):
     def __init__(self):

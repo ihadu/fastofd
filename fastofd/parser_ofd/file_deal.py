@@ -13,6 +13,7 @@ from uuid import uuid1
 
 import xmltodict
 import zipfile
+import re
 from loguru import logger
 
 from .path_parser import PathParser
@@ -54,6 +55,40 @@ class FileRead(object):
                 for file in f.namelist():
                     f.extract(file, path=self.xml_name)
        
+    def _read_xml_text(self, abs_path: str) -> str:
+        """读取XML文本，按声明或常见编码自动解码，避免utf-8解码异常"""
+        try:
+            with open(abs_path, 'rb') as f:
+                data = f.read()
+        except Exception as e:
+            logger.error(f"read xml file error {abs_path}: {e}")
+            return ""
+        enc = None
+        head = data[:512]
+        m = re.search(br'encoding=["\']([A-Za-z0-9_\-]+)["\']', head)
+        if m:
+            try:
+                enc = m.group(1).decode('ascii', 'ignore').lower()
+            except Exception:
+                enc = None
+        candidates = []
+        if enc:
+            candidates.append(enc)
+        candidates += ['utf-8', 'gbk', 'gb2312', 'big5', 'utf-16', 'utf-16le', 'utf-16be']
+        tried = set()
+        for codec in candidates:
+            if codec in tried:
+                continue
+            tried.add(codec)
+            try:
+                return data.decode(codec)
+            except UnicodeDecodeError:
+                continue
+            except Exception:
+                continue
+        logger.warning(f"XML decode fallback latin-1 for {abs_path}")
+        return data.decode('latin-1', errors='ignore')
+
     def buld_file_tree(self):
         "xml读取对象其他b64"
         self.file_tree["root"] = self.unzip_path
@@ -64,7 +99,7 @@ class FileRead(object):
                 abs_path = os.path.join(root,file)
                 # 资源文件 则 b64 xml 则  xml——obj
                 self.file_tree[abs_path] = str(base64.b64encode(open(f"{abs_path}","rb").read()),"utf-8")  \
-                    if "xml" not in file else xmltodict.parse(open(f"{abs_path}" , "r", encoding="utf-8").read())
+                    if "xml" not in file else xmltodict.parse(self._read_xml_text(abs_path))
         self.file_tree["root_doc"] = os.path.join(self.unzip_path,"OFD.xml") if os.path.join(self.unzip_path,"OFD.xml") in self.file_tree else ""
   
         if os.path.exists(self.unzip_path):

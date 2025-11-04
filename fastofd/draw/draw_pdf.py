@@ -16,8 +16,10 @@ from loguru import logger
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
+from reportlab.lib.units import mm
+from reportlab.lib.colors import red, blue, grey
 
-from easyofd.draw.font_tools import FontTool
+from fastofd.draw.font_tools import FontTool
 from .find_seal_img import SealExtract
 
 
@@ -32,12 +34,13 @@ class DrawPDF():
         assert data, "未输入ofd解析结果"
         self.data = data
         self.author = "renoyuan"
-        self.OP = 200 / 25.4
+        self.OP = 72 / 25.4
         # self.OP = 1
         self.pdf_uuid_name = self.data[0]["pdf_name"]
         self.pdf_io = BytesIO()
         self.SupportImgType = ("JPG", "JPEG", "PNG")
-        self.init_font = "宋体"
+        # 使用已注册的基础中文字体作为默认字体，避免未注册的“宋体”导致异常
+        self.init_font = "STSong-Light"
         self.font_tool = FontTool()
 
     def draw_lines(my_canvas):
@@ -62,71 +65,67 @@ class DrawPDF():
         c.drawString(0, 210, "ofd 格式错误,不支持解析", mode=1)
         c.save()
 
-    # 单个字符偏移量计算
-    def cmp_offset(self, pos, offset, DeltaRule, text, CTM_info, dire="X") -> list:
+
+    def _expand_delta(self, DeltaRule: str) -> list[float]:
         """
-        pos 文本框x|y 坐标 
-        offset 第一个字符的X|Y 
-        DeltaRule 偏移量规则
-        resize 字符坐标缩放
-        返回 x|y  字符位置list 
+        把 DeltaRule 展开成纯粹的浮点增量列表
+        支持 g <count> <value> 语法
         """
-        if CTM_info and dire == "X":
-            resize = CTM_info.get("resizeX")
-            rotate = CTM_info.get("rotateX")
-            move= CTM_info.get("moveX")
-        elif CTM_info and dire == "Y":
-            resize = CTM_info.get("resizeY")
-            rotate = CTM_info.get("rotateY")
-            move = CTM_info.get("moveY")
+        if not DeltaRule.strip():
+            return []
+
+        tokens = DeltaRule.strip().split()
+        out, i = [], 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok == "g" and i + 2 < len(tokens):
+                count = int(tokens[i + 1])
+                value = float(tokens[i + 2])
+                out.extend([value] * count)
+                i += 3
+            else:
+                out.append(float(tok))
+                i += 1
+        return out
+
+
+    def cmp_offsetV2(self, pos, offset, DeltaRule, text, CTM_info, dire="X") -> list[float]:
+        """
+        返回每个字符在 dire 方向上的绝对坐标（mm）
+        """
+        # ---- 1. 计算变换参数 ----
+        if CTM_info:
+            resize = CTM_info.get(f"resize{dire}", 1.0)
+            move   = CTM_info.get(f"move{dire}",   0.0)
         else:
-            resize = 1
-            rotate = 0
-            move = 0
+            resize, move = 1.0, 0.0
 
-        # print(f"resize is {resize}")
-        char_pos = float(pos if pos else 0) + (float(offset if offset else 0) + move) * resize
-        pos_list = []
-        pos_list.append(char_pos)  # 放入第一个字符
-        offsets = [i for i in DeltaRule.split(" ")]
+        # ---- 2. 展开增量 ----
+        deltas = self._expand_delta(DeltaRule)          # 仅增量
+        # 长度对齐：不足的间隙用“最后一个增量值”补齐，避免 0 造成重叠
+        needed = (len(text) - 1) - len(deltas)
+        if needed > 0:
+            pad_val = deltas[-1] if deltas else 0.0
+            deltas.extend([pad_val] * needed)
 
-        if "g" in DeltaRule:  # g 代表多个元素
-            g_no = None
-            for _no, offset_i in enumerate(offsets):
+        # ---- 3. 首字符起点 ----
+        start = float(pos or 0.0) + (float(offset or 0.0) + move) * resize
+        coords = [start]
 
-                if offset_i == "g":
-                    g_no = _no
-                    for j in range(int(offsets[(g_no + 1)])):
-                        char_pos += float(offsets[(g_no + 2)])
-                        pos_list.append(char_pos)
+        # ---- 4. 累加 ----
+        for d in deltas:
+            start += d * resize
+            coords.append(start)
 
-                elif offset_i and offset_i != "g" :
-                    if g_no == None:
-                        char_pos += float(offset_i) * resize
-                        pos_list.append(char_pos)
-                    elif (int(_no) > int(g_no + 2)) and g_no != None:
-                        # print(f"offset_i is {offset_i}")
-                        char_pos += float(offset_i) * resize
-                        pos_list.append(char_pos)
+        return coords[:len(text)]
 
-        elif not DeltaRule:  # 没有字符偏移量 一般单字符
-            pos_list = []
-            for i in range(len(text)):
-                pos_list.append(char_pos)
-        else:  # 有字符偏移量
-            for i in offsets:
-                if not i:
-                    char_pos += 0
-                else:
-                    char_pos += float(i) * resize
-                pos_list.append(char_pos)
-
-        return pos_list
 
     def draw_chars(self, canvas, text_list, fonts, page_size):
         """写入字符"""
         c = canvas
         for line_dict in text_list:
+            # if line_dict.get("ID") == "246":
+            #     print('>>>>>>>')
             # TODO 写入前对于正文内容整体序列化一次 方便 查看最后输入值 对于最终 格式先
             text = line_dict.get("text")
             font_info = fonts.get(line_dict.get("font"), {})
@@ -134,21 +133,17 @@ class DrawPDF():
                 font_name = font_info.get("FontName", "")
             else:
                 font_name = self.init_font
-            # print(f"font_name:{font_name}")
+            print(f"font_name:{font_name}")
 
             # TODO 判断是否通用已有字体 否则匹配相近字体使用
             if font_name not in self.font_tool.FONTS:
                 font_name = self.font_tool.FONTS[0]
-
+            # 解析使用指定字体
+            font_name = self.init_font
+            
             font = self.font_tool.normalize_font_name(font_name)
             # print(f"font_name:{font_name} font:{font}")
-
-            try:
-                c.setFont(font, line_dict["size"] * self.OP)
-            except KeyError as key_error:
-                logger.error(f"{key_error}")
-                font =  self.font_tool.FONTS[0]
-                c.setFont(font, line_dict["size"] * self.OP)
+            
             # 原点在页面的左下角 
             color = line_dict.get("color", [0, 0, 0])
             if len(color) < 3:
@@ -163,6 +158,7 @@ class DrawPDF():
             X = line_dict.get("X", "")
             Y = line_dict.get("Y", "")
             CTM = line_dict.get("CTM", "")  # 因为ofd 增加这个字符缩放
+            pos = line_dict.get("pos", [])
             resizeX = 1
             resizeY = 1
             # CTM =None # 有的数据不使用这个CTM
@@ -174,13 +170,28 @@ class DrawPDF():
                     "resizeY": float(CTMS[3]),
                     "moveX": float(CTMS[4]),
                     "moveY": float(CTMS[5]),
-
                 }
-
+                resizeY = CTM_info.get("resizeY")
+                font_size = line_dict["size"] * self.OP * resizeY
             else:
                 CTM_info ={}
-            x_list = self.cmp_offset(line_dict.get("pos")[0], X, DeltaX, text, CTM_info, dire="X")
-            y_list = self.cmp_offset(line_dict.get("pos")[1], Y, DeltaY, text, CTM_info, dire="Y")
+                font_size = line_dict["size"] * self.OP
+
+            if pos and len(pos) == 4:
+                x_mm = pos[0]
+                y_mm = pos[1]
+                width_mm = pos[2]
+                height_mm = pos[3]
+
+            x_list = self.cmp_offsetV2(x_mm, X, DeltaX, text, CTM_info, dire="X")
+            y_list = self.cmp_offsetV2(y_mm, Y, DeltaY, text, CTM_info, dire="Y")
+
+            try:
+                c.setFont(font, font_size)
+            except KeyError as key_error:
+                logger.error(f"{key_error}")
+                font =  self.font_tool.FONTS[0]
+                c.setFont(font, font_size)
 
             # print("x_list",x_list)
             # print("y_list",y_list)
@@ -212,20 +223,54 @@ class DrawPDF():
                         # text_write.append((x_p,  y_p, text))
                     # 按字符写入
                     else:
+                        # 特殊处理规格型号和总价字段
+                        is_special_field = False
+                        field_text = text.strip()
+                        # 检查是否包含规格型号或总价相关的特殊内容
+                        if re.search(r"[0-9%@#$&*()\[\]{}]+", field_text) and len(field_text) > 3:
+                            is_special_field = True
+                            
+                        # 中文字符集检测
+                        has_chinese = bool(re.search(r'[\u4e00-\u9fa5]', text))
+                        
                         for cahr_id, _cahr_ in enumerate(text):
                             if len(x_list)>cahr_id:
-                                # print("char wtite")
-                                c.setFont(font, line_dict["size"] * self.OP * resizeX)
+                                # print("char wtite ---")
                                 _cahr_x = float(x_list[cahr_id]) * self.OP
                                 _cahr_y = (float(page_size[3]) - (float(y_list[cahr_id]))) * self.OP
-                                # print(_cahr_x,  _cahr_y, _cahr_)
-                                c.drawString(_cahr_x, _cahr_y, _cahr_, mode=0)  # mode=3 文字不可见 0可見
+                                
+                                try:
+                                    c.setFont(font, font_size)
+                                except KeyError as key_error:
+                                    logger.error(f"Font error: {key_error}")
+                                    # 多级字体回退策略
+                                    fallback_attempted = False
+                                    for fallback_font in self.font_tool.FONTS[:10]:  # 尝试更多字体
+                                        try:
+                                            font = fallback_font
+                                            c.setFont(fallback_font, font_size)
+                                            fallback_attempted = True
+                                            break
+                                        except KeyError:
+                                            continue
+                                    
+                                    # 如果都失败了，使用ReportLab的默认字体
+                                    if not fallback_attempted:
+                                        try:
+                                            font = "Helvetica"
+                                            c.setFont("Helvetica", font_size)
+                                        except:
+                                            pass
+                                 
+                                print(line_dict.get("ID"), font, font_size, _cahr_x,  _cahr_y, _cahr_)
+                                c.drawString(_cahr_x, _cahr_y, _cahr_, mode=0) 
                             else:
                                 logger.debug(f"match {_cahr_} pos error \n{text} \n{x_list}")
                             # text_write.append((_cahr_x,  _cahr_y, _cahr_))
                 except Exception as e:
-                    logger.error(f"{e}")
+                    logger.error(f"文本绘制错误: {e}")
                     traceback.print_exc()
+        
 
     def compute_ctm(self, CTM,x1, y1, img_width, img_height):
         """待定方法"""
@@ -676,20 +721,25 @@ class DrawPDF():
                 file_name = font_v.get("FontFile")
                 font_b64 = font_v.get("font_b64")
                 if font_b64:
-                    self.font_tool.register_font(os.path.split(file_name)[1], font_v.get("@FontName"), font_b64)
-            # text_write = []
-            # print("doc.get(page_info)", len(doc.get("page_info")))
+                    self.font_tool.register_font(os.path.split(file_name)[1], font_v.get("FontName"), font_b64)
+            text_write = []
+            print("doc.get(page_info)", len(doc.get("page_info")))
             for pg_no, page in doc.get("page_info").items():
-                print(f"pg_no: {pg_no} page_size_details: {page_size_details}")
+                # if pg_no != 4:
+                #     continue
+
+                # print(f"pg_no: {pg_no} page_size_details: {page_size_details}")
                 if len(page_size_details) > pg_no and page_size_details[pg_no]:
                     page_size = page_size_details[pg_no]
                 else:
                     page_size = default_page_size
-                # logger.info(f"page_id {page_id} page_size {page_size}")
+                logger.info(f"pg_no {pg_no} page_size {page_size}")
                 text_list = page.get("text_list")
                 img_list = page.get("img_list")
                 line_list = page.get("line_list")
                 # print("img_list",img_list)
+                # print("text_list",text_list)
+                # print("line_list",line_list)
 
                 c.setPageSize((page_size[2] * self.OP, page_size[3] * self.OP))
 
@@ -699,8 +749,8 @@ class DrawPDF():
 
                 # 写入文本
                 if text_list:
-
                     self.draw_chars(c, text_list, fonts, page_size)
+                    # self.draw_charsV2(c, text_list)
 
                 # 绘制线条
                 if line_list:
@@ -715,10 +765,9 @@ class DrawPDF():
                 
                 # 页码判断逻辑 # print(doc_id,len(self.data))
                 if pg_no != len(doc.get("page_info")) - 1 and doc_id != len(self.data):
-                    # print("写入")
+                    print("写入")
                     c.showPage()
-                    # json.dump(text_write,open("text_write.json","w",encoding="utf-8"),ensure_ascii=False)
-
+                    # json.dump(text_write,open(f"text_write_{doc_id}_{pg_no}.json","w",encoding="utf-8"),ensure_ascii=False)
         c.save()
 
     def __call__(self):

@@ -1,1 +1,1 @@
-pyinstaller -F -w -i ico\reno.ico  main.py -n easyofd.exe
+pyinstaller -F -w -i ico\reno.ico  main.py -n fastofd.exe

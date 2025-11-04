@@ -19,8 +19,8 @@ import fitz
 from PIL import Image
 from loguru import logger
 
-from easyofd.parser_ofd import OFDParser
-from easyofd.draw import DrawPDF, OFDWrite
+from fastofd.parser_ofd import OFDParser
+from fastofd.draw import DrawPDF, OFDWrite
 
 
 class OFD(object):
