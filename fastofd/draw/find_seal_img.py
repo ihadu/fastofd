@@ -83,7 +83,7 @@ class SealExtract(object):
             # print(f"图片已保存为'image.{image_format}'")
             return image
         except UnidentifiedImageError:
-            logger.info("not img ")
+            logger.debug("not img ")
 
     def __call__(self, path="", b64=""):
 
@@ -99,10 +99,10 @@ class SealExtract(object):
 
                     img = self.hex_to_image(str(octet_string.prettyPrint())[2:],inx= i)
                     if img:
-                        logger.info("ASN.1 data found.")
+                        logger.debug("ASN.1 data found.")
                         img_list.append(img)
         else:
-            logger.info("No valid ASN.1 data found.")
+            logger.debug("No valid ASN.1 data found.")
 
         return  img_list
 
