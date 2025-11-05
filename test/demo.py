@@ -8,6 +8,7 @@
 import base64
 import os
 import sys
+import time
 
 from PIL import Image
 from PIL.Image import Image as ImageClass
@@ -54,7 +55,7 @@ def test_ofd2(file_path, output_dir=None):
     ofd = OFD()  # 初始化OFD 工具类
     ofd.read(ofdb64, save_xml=True, xml_name=f"{file_prefix}_xml")  # 读取ofdb64
     # print("ofd.data", ofd.data) # ofd.data 为程序解析结果
-    pdf_bytes = ofd.to_pdf()  # 转pdf
+    pdf_bytes = ofd.to_pdf(render_mode='char')  # 转pdf
     # img_np = ofd.to_jpg()  # 转图片
     ofd.del_data()
 
@@ -96,10 +97,20 @@ def test_pdf2(file_path):
 
 if __name__ == "__main__":
 
-    file_path = rf"/Volumes/PSSD/特殊OFD/大OFD/金晟建设集团有限公司04整本响应文件 (12)(1).ofd"
+    file_path = rf"/Volumes/PSSD/ofd/湖北圳康安后勤管理服务有限公司.ofd"
     # 指定输出目录为当前目录下的output文件夹
     output_dir = os.path.join(os.getcwd(), "output")
+    
+    # 添加耗时计算
+    start_time = time.time()
+    
+    # 执行OFD转换操作
     test_ofd2(file_path, output_dir)
+    
+    # 计算并显示耗时
+    elapsed_time = time.time() - start_time
+    print(f"文件处理完成！")
+    print(f"总耗时: {elapsed_time:.2f} 秒")
 
     # root_dir = r"/Volumes/PSSD/新ofd"
     # for dirpath, dirnames, filenames in os.walk(root_dir):

@@ -65,12 +65,12 @@ class OFD(object):
         ofd_byte = OFDWrite()(pdfbyte, optional_text=optional_text)
         return ofd_byte
 
-    def to_pdf(self, ):
+    def to_pdf(self, render_mode='line'):
         """return ofdbytes"""
 
         assert self.data, f"data is None"
         logger.info(f"to_pdf")
-        return DrawPDF(self.data)()
+        return DrawPDF(self.data, render_mode=render_mode)()
 
     def pdf2img(self, pdfbytes):
 

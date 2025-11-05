@@ -104,7 +104,21 @@ class FontTool(object):
         logger.debug(f"Font fallback order: {final[:10]} ... total {len(final)}")
         return final
 
-    def normalize_font_name(self, font_name: str) -> str:
+    def normalize_font_name(self, font_name):
+        """将字体名称规范化，例如 'Times New Roman Bold' -> 'TimesNewRoman-Bold'"""
+        # 替换空格为无，并将样式（Bold/Italic等）用连字符连接
+        normalized = font_name.replace(' ', '')
+        # 处理常见的样式后缀
+        for style in ['Bold', 'Italic', 'Regular', 'Light', 'Medium', ]:
+            if style in normalized:
+                normalized = normalized.replace(style, f'-{style}')
+
+        # todo 特殊字体名规范 后续存在需要完善
+        if normalized ==  "TimesNewRoman" :
+            normalized = normalized.replace("TimesNewRoman","Times-Roman")
+        return normalized
+
+    def normalize_font_nameV2(self, font_name: str) -> str:
         """字体名归一化：
         - 增强版本，支持更多字体名称映射
         - 去除多余空格，统一大小写风格
