@@ -6,19 +6,19 @@
 # AUTHOR: reno
 # NOTE:  绘制pdf
 import base64
-import os
 import re
 import time
 import traceback
 from io import BytesIO
+import concurrent.futures
+import io
 
+from pypdf import PdfReader, PdfWriter
 from PIL import Image as PILImage
 from loguru import logger
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
-from reportlab.lib.units import mm
-from reportlab.lib.colors import red, blue, grey
 
 from fastofd.draw.font_tools import FontTool
 from .find_seal_img import SealExtract
@@ -45,6 +45,13 @@ class DrawPDF():
         self.font_tool = FontTool()
         # 文本渲染模式：'line'（整行写入优先，超出边界回退到字符写入）或'char'（始终使用字符写入）
         self.render_mode = kwargs.get('render_mode', 'line')
+        
+        # 并发处理相关配置参数
+        self.max_workers = kwargs.get('max_workers', None)  # None表示自动计算
+        self.single_thread_threshold = kwargs.get('single_thread_threshold', 10)  # 页面数量阈值，低于此值使用单线程
+        self.min_pages_per_chunk = kwargs.get('min_pages_per_chunk', 1)  # 每个子PDF的最小页数
+        self.optimized_pages_per_chunk = kwargs.get('optimized_pages_per_chunk', 5)  # 优化性能的每块页数
+        self.force_single_thread = kwargs.get('force_single_thread', False)  # 强制使用单线程模式
 
     def draw_lines(my_canvas):
         """
@@ -749,27 +756,16 @@ class DrawPDF():
         """
         生成PDF文件，使用并发处理优化性能
         由于ReportLab不是线程安全的，采用并发生成子PDF然后合并的策略
+        
+        可配置参数（通过__init__方法的kwargs传入）：
+        - max_workers: 最大线程数，None表示自动计算（默认为CPU核心数和8的较小值）
+        - single_thread_threshold: 页面数量阈值，低于此值使用单线程（默认10）
+        - min_pages_per_chunk: 每个子PDF的最小页数（默认1）
+        - optimized_pages_per_chunk: 优化性能的每块页数（默认5）
+        - force_single_thread: 强制使用单线程模式（默认False）
         """
-        import concurrent.futures
-        import time
-        import io
-        import tempfile
-        import os
-        
-        # 尝试导入pypdf用于PDF合并（PyPDF2的继任者）
-        try:
-            from pypdf import PdfReader, PdfWriter
-            can_merge_pdfs = True
-        except ImportError:
-            # 如果pypdf不可用，尝试回退到PyPDF2
-            try:
-                from PyPDF2 import PdfReader, PdfWriter
-                can_merge_pdfs = True
-                logger.warning("pypdf未安装，回退使用PyPDF2。建议安装pypdf以获得更好的支持和性能")
-            except ImportError:
-                logger.warning("pypdf和PyPDF2均未安装，无法使用并发合并PDF功能，将使用单线程模式")
-                can_merge_pdfs = False
-        
+
+        can_merge_pdfs = True
         start_draw_time = time.time()
         
         # 收集所有页面任务
@@ -809,8 +805,8 @@ class DrawPDF():
         total_pages = len(all_pages)
         logger.info(f"开始处理 {total_pages} 页")
         
-        # 如果页面数量很少或不能合并PDF，直接使用单线程模式
-        if total_pages <= 10 or not can_merge_pdfs:
+        # 如果页面数量很少、不能合并PDF或强制使用单线程，直接使用单线程模式
+        if total_pages <= self.single_thread_threshold or not can_merge_pdfs or self.force_single_thread:
             logger.info("页面数量较少或无法合并PDF，使用单线程模式处理")
             # 使用原始的单线程方式处理
             c = canvas.Canvas(self.pdf_io)
@@ -858,16 +854,19 @@ class DrawPDF():
         # 使用并发生成子PDF然后合并的方式
         logger.info("使用并发生成子PDF然后合并的策略优化性能")
         
-        # 动态确定线程池大小，根据系统CPU核心数
+        # 动态确定线程池大小
         import multiprocessing
-        max_workers = min(multiprocessing.cpu_count(), 8)  # 最多使用8个线程
+        if self.max_workers is None:
+            max_workers = min(multiprocessing.cpu_count(), 8)  # 默认最多使用8个线程
+        else:
+            max_workers = max(1, self.max_workers)  # 确保至少有1个线程
         logger.info(f"使用线程池大小: {max_workers}")
         
         # 计算每个子PDF处理的页面数
-        pages_per_chunk = max(1, total_pages // (max_workers * 2))
-        # 确保每个子PDF至少处理5页（除非总页数少于max_workers*5）
-        if total_pages >= max_workers * 5:
-            pages_per_chunk = max(pages_per_chunk, 5)
+        pages_per_chunk = max(self.min_pages_per_chunk, total_pages // (max_workers * 2))
+        # 确保每个子PDF至少处理指定的优化页数（除非总页数少于max_workers*optimized_pages_per_chunk）
+        if total_pages >= max_workers * self.optimized_pages_per_chunk:
+            pages_per_chunk = max(pages_per_chunk, self.optimized_pages_per_chunk)
         
         # 将页面分成多个块
         chunks = []
