@@ -1,7 +1,7 @@
 
 import setuptools 
 # 直接设置版本号，避免在构建过程中导入fastofd包
-__version__ = "0.0.4"
+__version__ = "0.0.5"
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
  

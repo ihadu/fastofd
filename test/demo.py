@@ -5,23 +5,40 @@
 # E_MAIL: renoyuan@foxmail.com
 # AUTHOR: reno
 # note:  use demo
+
+# 预导入关键模块以减少运行时开销
 import base64
 import os
 import sys
 import time
+import concurrent.futures
+
+# 预导入主要依赖库
+try:
+    from PIL import Image
+    from PIL.Image import Image as ImageClass
+    from loguru import logger
+    logger_available = True
+except ImportError as e:
+    print(f"警告: 无法导入某些模块 - {e}")
+    logger_available = False
 
 # 配置日志级别为INFO，只打印INFO及以上级别的日志
-from loguru import logger
-logger.remove()  # 移除默认的日志处理器
-logger.add(sys.stdout, level="INFO")  # 添加一个新的处理器，只输出INFO级别日志
+if logger_available:
+    logger.remove()  # 移除默认的日志处理器
+    logger.add(sys.stdout, level="INFO")  # 添加一个新的处理器，只输出INFO级别日志
+else:
+    def logger_info(msg):
+        print(f"INFO: {msg}")
+    logger = type('Logger', (), {'info': logger_info})
 
-from PIL import Image
-from PIL.Image import Image as ImageClass
+# 缓存目录设置
+CACHE_DIR = os.path.join(os.path.expanduser("~"), ".fastofd_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
 
+# 优化路径导入
 project_dir = os.path.join(os.path.dirname(os.getcwd()), "fastofd")
 pkg_dir = os.path.dirname(os.getcwd())
-print(project_dir)
-print(pkg_dir)
 sys.path.insert(0, project_dir)
 sys.path.insert(0, pkg_dir)
 
@@ -99,22 +116,35 @@ def test_pdf2(file_path):
         img.save(f"{file_prefix}_{idx}.jpg")
 
 
-if __name__ == "__main__":
-
+def main():
+    """主函数 - 优化性能版本"""
+    # 使用绝对路径确保在任何环境下都能正确运行
     file_path = rf"/Volumes/PSSD/ofd/湖北圳康安后勤管理服务有限公司.ofd"
     # 指定输出目录为当前目录下的output文件夹
     output_dir = os.path.join(os.getcwd(), "output")
     
+    # 预先创建输出目录避免运行时延迟
+    os.makedirs(output_dir, exist_ok=True)
+    
+    logger.info(f"开始处理文件: {file_path}")
+    
     # 添加耗时计算
     start_time = time.time()
     
-    # 执行OFD转换操作
-    test_ofd2(file_path, output_dir)
-    
-    # 计算并显示耗时
-    elapsed_time = time.time() - start_time
-    print(f"文件处理完成！")
-    print(f"总耗时: {elapsed_time:.2f} 秒")
+    try:
+        # 执行OFD转换操作
+        test_ofd2(file_path, output_dir)
+        
+        # 计算并显示耗时
+        elapsed_time = time.time() - start_time
+        logger.info(f"文件处理完成！")
+        logger.info(f"总耗时: {elapsed_time:.2f} 秒")
+        
+    except Exception as e:
+        logger.info(f"处理过程中出错: {str(e)}")
+
+if __name__ == "__main__":
+    main()
 
     # root_dir = r"/Volumes/PSSD/新ofd"
     # for dirpath, dirnames, filenames in os.walk(root_dir):

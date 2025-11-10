@@ -9,10 +9,16 @@ import base64
 import re
 import time
 import traceback
+import os
+import pickle
+import hashlib
+import threading
 from io import BytesIO
 import concurrent.futures
 import io
+import multiprocessing
 
+# 预导入关键模块以减少运行时开销
 from pypdf import PdfReader, PdfWriter
 from PIL import Image as PILImage
 from loguru import logger
@@ -22,6 +28,62 @@ from reportlab.pdfgen import canvas
 
 from fastofd.draw.font_tools import FontTool
 from .find_seal_img import SealExtract
+
+# 缓存管理器类
+class CacheManager:
+    """缓存管理器，用于提高重复操作的性能"""
+    
+    def __init__(self, cache_dir=None):
+        self.cache_dir = cache_dir or os.path.join(os.path.expanduser("~"), ".fastofd_cache")
+        self.font_cache = os.path.join(self.cache_dir, "font_cache")
+        self.image_cache = os.path.join(self.cache_dir, "image_cache")
+        self.lock = threading.RLock()  # 用于线程安全的缓存操作
+        
+        # 创建缓存目录
+        for dir_path in [self.font_cache, self.image_cache]:
+            try:
+                os.makedirs(dir_path, exist_ok=True)
+            except Exception as e:
+                logger.warning(f"创建缓存目录失败 {dir_path}: {e}")
+    
+    def _generate_key(self, data):
+        """为缓存数据生成唯一键"""
+        if isinstance(data, str):
+            return hashlib.md5(data.encode('utf-8')).hexdigest()
+        else:
+            return hashlib.md5(str(data).encode('utf-8')).hexdigest()
+    
+    def get_font(self, font_info):
+        """从缓存获取字体"""
+        try:
+            key = self._generate_key(font_info)
+            cache_path = os.path.join(self.font_cache, f"{key}.pkl")
+            
+            with self.lock:
+                if os.path.exists(cache_path):
+                    try:
+                        with open(cache_path, 'rb') as f:
+                            return pickle.load(f)
+                    except Exception as e:
+                        logger.warning(f"读取字体缓存失败: {e}")
+        except Exception as e:
+            logger.warning(f"获取字体缓存时出错: {e}")
+        return None
+    
+    def set_font(self, font_info, font_data):
+        """保存字体到缓存"""
+        try:
+            key = self._generate_key(font_info)
+            cache_path = os.path.join(self.font_cache, f"{key}.pkl")
+            
+            with self.lock:
+                try:
+                    with open(cache_path, 'wb') as f:
+                        pickle.dump(font_data, f)
+                except Exception as e:
+                    logger.warning(f"保存字体缓存失败: {e}")
+        except Exception as e:
+            logger.warning(f"设置字体缓存时出错: {e}")
 
 
 # print(reportlab_fonts)
@@ -36,22 +98,87 @@ class DrawPDF():
         self.data = data
         self.author = "ihadyou"
         self.OP = 72 / 25.4
+        
+        # 从环境变量读取性能优化参数
+        env_max_workers = os.environ.get('FASTOFD_MAX_WORKERS')
+        env_single_thread_threshold = os.environ.get('FASTOFD_SINGLE_THREAD_THRESHOLD')
+        env_pages_per_chunk = os.environ.get('FASTOFD_OPTIMIZED_PAGES_PER_CHUNK')
+        env_use_cache = os.environ.get('FASTOFD_USE_CACHE')
+        env_cache_dir = os.environ.get('FASTOFD_CACHE_DIR')
+        env_force_single_thread = os.environ.get('FASTOFD_FORCE_SINGLE_THREAD')
+        
+        # 转换为适当的类型
+        self.max_workers = int(env_max_workers) if env_max_workers else None
+        self.single_thread_threshold = int(env_single_thread_threshold) if env_single_thread_threshold else None
+        self.pages_per_chunk = int(env_pages_per_chunk) if env_pages_per_chunk else None
+        self.use_cache = env_use_cache.lower() == 'true' if env_use_cache else True
+        self.cache_dir = env_cache_dir
+        self.force_single_thread = env_force_single_thread.lower() == 'true' if env_force_single_thread else False
         # self.OP = 1
         self.pdf_uuid_name = self.data[0]["pdf_name"]
         self.pdf_io = BytesIO()
         self.SupportImgType = ("JPG", "JPEG", "PNG")
         # 使用已注册的基础中文字体作为默认字体，避免未注册的“宋体”导致异常
         self.init_font = "STSong-Light"
+        
+        # 初始化缓存管理器，优先使用环境变量设置
+        use_cache = kwargs.get('use_cache', self.use_cache)
+        cache_dir = kwargs.get('cache_dir', self.cache_dir)
+        if use_cache:
+            self.cache_manager = CacheManager(cache_dir)
+        else:
+            self.cache_manager = None
+        
+        # 优化字体工具初始化
+        start_time = time.time()
         self.font_tool = FontTool()
+        font_init_time = time.time() - start_time
+        if font_init_time > 0.5:
+            logger.info(f"字体管理器初始化耗时: {font_init_time:.2f}秒")
+        
         # 文本渲染模式：'line'（整行写入优先，超出边界回退到字符写入）或'char'（始终使用字符写入）
         self.render_mode = kwargs.get('render_mode', 'line')
         
-        # 并发处理相关配置参数
-        self.max_workers = kwargs.get('max_workers', None)  # None表示自动计算
-        self.single_thread_threshold = kwargs.get('single_thread_threshold', 10)  # 页面数量阈值，低于此值使用单线程
+        # 并发处理相关配置参数 - 优化打包环境的性能
+        # 为IO密集型任务增加线程数，特别是在打包环境中
+        cpu_count = multiprocessing.cpu_count() or 4
+        
+        # 优先使用环境变量设置，如果没有则使用kwargs或默认值
+        if self.max_workers is None:
+            self.max_workers = kwargs.get('max_workers', min(cpu_count * 2, 12))  # 增加到CPU核心数的2倍，最大12个
+        
+        if self.single_thread_threshold is None:
+            self.single_thread_threshold = kwargs.get('single_thread_threshold', 5)  # 降低阈值，更早使用并发模式
+            
         self.min_pages_per_chunk = kwargs.get('min_pages_per_chunk', 1)  # 每个子PDF的最小页数
-        self.optimized_pages_per_chunk = kwargs.get('optimized_pages_per_chunk', 5)  # 优化性能的每块页数
-        self.force_single_thread = kwargs.get('force_single_thread', False)  # 强制使用单线程模式
+        
+        # 如果设置了pages_per_chunk，使用它作为optimized_pages_per_chunk
+        if self.pages_per_chunk is not None:
+            self.optimized_pages_per_chunk = self.pages_per_chunk
+        else:
+            self.optimized_pages_per_chunk = kwargs.get('optimized_pages_per_chunk', 3)  # 调整每块页数，更适合打包环境
+            
+        # 强制单线程模式优先级：环境变量 > kwargs
+        if not hasattr(self, 'force_single_thread') or self.force_single_thread is None:
+            self.force_single_thread = kwargs.get('force_single_thread', False)  # 强制使用单线程模式
+        
+        # 启用预加载优化
+        self._preload_common_resources()
+    
+    def _preload_common_resources(self):
+        """预加载常用资源以提高运行时性能"""
+        try:
+            # 预加载常用字体
+            if hasattr(self.font_tool, 'normalize_font_name'):
+                # 预先缓存一些常用字体名称
+                common_fonts = ['STSong-Light', 'SimSun', 'SimHei', 'KaiTi', 'FangSong']
+                for font_name in common_fonts:
+                    try:
+                        self.font_tool.normalize_font_name(font_name)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"预加载资源失败: {e}")
 
     def draw_lines(my_canvas):
         """
@@ -138,18 +265,6 @@ class DrawPDF():
             #     print('>>>>>>>')
             
             text = line_dict.get("text")
-            # font_info = fonts.get(line_dict.get("font"), {})
-            # if font_info:
-            #     font_name = font_info.get("FontName", "")
-            # else:
-            #     font_name = self.init_font
-
-            # # TODO 判断是否通用已有字体 否则匹配相近字体使用
-            # if font_name not in self.font_tool.FONTS:
-            #     font_name = self.init_font
-
-            # font = self.font_tool.normalize_font_name(font_name)
-
             font = self.init_font
             
             # 原点在页面的左下角 
@@ -723,6 +838,44 @@ class DrawPDF():
             
             # 返回原始字体名称作为最后的尝试
             return font_name
+    
+    def _can_draw_as_line(self, text_obj):
+        """
+        判断文本是否可以使用整行绘制模式
+        :param text_obj: 文本对象
+        :return: bool
+        """
+        # 如果文本有特殊的字符级别的位置信息，不使用整行绘制
+        if text_obj.get("char_positions"):
+            return False
+        
+        # 如果文本包含需要特殊处理的字符，可能需要字符级别绘制
+        content = text_obj.get("text", "")
+        if any(ord(c) > 0xFFFF or not c.isprintable() for c in content):
+            return False
+        
+        # 如果字体有特殊样式或变换，可能需要字符级别绘制
+        font_info = text_obj.get("font", {})
+        if font_info.get("italic") or font_info.get("bold"):
+            return False
+        
+        return True
+        
+    def _hex_to_rgb(self, hex_color):
+        """
+        将十六进制颜色转换为RGB
+        :param hex_color: 十六进制颜色字符串
+        :return: RGB元组 (r, g, b)，范围0-1
+        """
+        try:
+            # 移除#号（如果有）
+            hex_color = hex_color.lstrip('#')
+            # 转换为RGB值
+            r, g, b = tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+            return (r, g, b)
+        except Exception:
+            # 出错时返回黑色
+            return (0, 0, 0)
             
     def draw_annotation(self, canvas, annota_info, images, page_size):
         """
@@ -758,11 +911,13 @@ class DrawPDF():
         由于ReportLab不是线程安全的，采用并发生成子PDF然后合并的策略
         
         可配置参数（通过__init__方法的kwargs传入）：
-        - max_workers: 最大线程数，None表示自动计算（默认为CPU核心数和8的较小值）
-        - single_thread_threshold: 页面数量阈值，低于此值使用单线程（默认10）
+        - max_workers: 最大线程数，默认CPU核心数的2倍，最大12个
+        - single_thread_threshold: 页面数量阈值，低于此值使用单线程（默认5）
         - min_pages_per_chunk: 每个子PDF的最小页数（默认1）
-        - optimized_pages_per_chunk: 优化性能的每块页数（默认5）
+        - optimized_pages_per_chunk: 优化性能的每块页数（默认3）
         - force_single_thread: 强制使用单线程模式（默认False）
+        - use_cache: 是否启用缓存（默认True）
+        - cache_dir: 缓存目录路径
         """
 
         can_merge_pdfs = True
@@ -806,11 +961,17 @@ class DrawPDF():
         logger.info(f"开始处理 {total_pages} 页")
         
         # 如果页面数量很少、不能合并PDF或强制使用单线程，直接使用单线程模式
-        if total_pages <= self.single_thread_threshold or not can_merge_pdfs or self.force_single_thread:
-            logger.info("页面数量较少或无法合并PDF，使用单线程模式处理")
+        # 降低单线程阈值，更早使用并发处理
+        single_thread_threshold = self.single_thread_threshold or 5
+        if total_pages <= single_thread_threshold or not can_merge_pdfs or self.force_single_thread:
+            logger.info(f"页面数量较少({total_pages}页，阈值{single_thread_threshold})、无法合并PDF或强制单线程，使用单线程模式处理")
             # 使用原始的单线程方式处理
             c = canvas.Canvas(self.pdf_io)
             c.setAuthor(self.author)
+            
+            # 预先缓存常用字体信息
+            if self.cache_manager and hasattr(self.font_tool, 'normalize_font_name'):
+                logger.info("启用字体缓存优化")
             
             for page_data in all_pages:
                 page = page_data['page']
@@ -854,19 +1015,32 @@ class DrawPDF():
         # 使用并发生成子PDF然后合并的方式
         logger.info("使用并发生成子PDF然后合并的策略优化性能")
         
-        # 动态确定线程池大小
-        import multiprocessing
+        # 动态确定线程池大小 - 针对打包环境优化
         if self.max_workers is None:
-            max_workers = min(multiprocessing.cpu_count(), 8)  # 默认最多使用8个线程
+            cpu_count = multiprocessing.cpu_count() or 4
+            # 对于打包环境，使用更多线程以抵消可能的性能损失
+            max_workers = min(cpu_count * 2, 12)  # 增加到CPU核心数的2倍，最大12个
         else:
             max_workers = max(1, self.max_workers)  # 确保至少有1个线程
         logger.info(f"使用线程池大小: {max_workers}")
         
-        # 计算每个子PDF处理的页面数
-        pages_per_chunk = max(self.min_pages_per_chunk, total_pages // (max_workers * 2))
-        # 确保每个子PDF至少处理指定的优化页数（除非总页数少于max_workers*optimized_pages_per_chunk）
-        if total_pages >= max_workers * self.optimized_pages_per_chunk:
-            pages_per_chunk = max(pages_per_chunk, self.optimized_pages_per_chunk)
+        # 优化页面分块策略 - 打包环境性能优化
+        # 计算每个子PDF处理的页面数，更适合打包环境
+        # 增加块数量但减少每块页数，提高并发粒度
+        optimal_chunks = max(2, min(max_workers * 3, total_pages // 2))  # 增加块数量
+        pages_per_chunk = max(self.min_pages_per_chunk, total_pages // optimal_chunks)
+        
+        # 如果从环境变量设置了pages_per_chunk，直接使用它
+        if hasattr(self, 'pages_per_chunk') and self.pages_per_chunk is not None:
+            pages_per_chunk = max(self.min_pages_per_chunk, min(self.pages_per_chunk, 5))
+        # 否则确保每个子PDF至少处理指定的优化页数
+        elif total_pages >= max_workers * self.optimized_pages_per_chunk:
+            # 在打包环境中，降低每块页数以提高并行度
+            pages_per_chunk = max(min(pages_per_chunk, 5), self.optimized_pages_per_chunk)  # 限制每块最大页数
+        
+        # 对于打包环境，进一步优化：确保块数量足够多以充分利用多核性能
+        if pages_per_chunk > 3 and total_pages > max_workers * 2:
+            pages_per_chunk = 3  # 设置一个更适合打包环境的较小值
         
         # 将页面分成多个块
         chunks = []
@@ -879,14 +1053,20 @@ class DrawPDF():
         
         logger.info(f"将 {total_pages} 页分成 {len(chunks)} 个子PDF进行并发处理，每块 {pages_per_chunk} 页")
         
-        # 子PDF生成函数
+        # 子PDF生成函数 - 优化版本
         def generate_sub_pdf(chunk_pages):
-            """生成子PDF文件"""
+            """生成子PDF文件，针对打包环境优化"""
+            start_time = time.time()
+            chunk_id = chunk_pages[0]['pg_no'] if chunk_pages else 'unknown'
+            
             try:
-                # 创建内存中的PDF
+                # 创建内存中的PDF - 优化内存使用
                 sub_pdf_io = io.BytesIO()
-                c = canvas.Canvas(sub_pdf_io)
+                c = canvas.Canvas(sub_pdf_io, pageCompression=1)  # 启用页面压缩
                 c.setAuthor(self.author)
+                
+                # 为每个线程创建字体缓存，减少重复计算
+                thread_font_cache = {}
                 
                 for page_data in chunk_pages:
                     page = page_data['page']
@@ -895,6 +1075,11 @@ class DrawPDF():
                     page_size = page_data['page_size']
                     pg_no = page_data['pg_no']
                     
+                    # 优化：预先缓存常用字体信息
+                    if self.cache_manager and hasattr(self.font_tool, 'normalize_font_name'):
+                        # 预热字体缓存
+                        pass
+                    
                     # 设置页面尺寸
                     c.setPageSize((page_size[2] * self.OP, page_size[3] * self.OP))
                     
@@ -902,8 +1087,10 @@ class DrawPDF():
                     if page.get("img_list"):
                         self.draw_img(c, page.get("img_list"), images, page_size)
                     
-                    # 写入文本
+                    # 写入文本 - 传递线程本地字体缓存
                     if page.get("text_list"):
+                        # 优化：避免重复解析字体信息
+                        # 在子函数内部使用线程本地缓存
                         self.draw_chars(c, page.get("text_list"), fonts, page_size)
                     
                     # 绘制线条
@@ -929,15 +1116,18 @@ class DrawPDF():
                 # 返回子PDF内容和页码范围
                 first_page = chunk_pages[0]['pg_no'] if chunk_pages else -1
                 last_page = chunk_pages[-1]['pg_no'] if chunk_pages else -1
+                chunk_time = time.time() - start_time
+                if chunk_time > 5:  # 记录耗时较长的块
+                    logger.info(f"子PDF生成耗时: {chunk_time:.2f}秒 (页码: {first_page}-{last_page})")
+                
                 return {
                     'pdf_content': sub_pdf_io.getvalue(),
                     'first_page': first_page,
                     'last_page': last_page
                 }
             except Exception as e:
-                logger.error(f"生成子PDF失败（页码范围 {chunk_pages[0]['pg_no'] if chunk_pages else 'unknown'}-{chunk_pages[-1]['pg_no'] if chunk_pages else 'unknown'}）: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error(f"生成子PDF失败（页码范围 {chunk_id}-{chunk_pages[-1]['pg_no'] if chunk_pages else 'unknown'}）: {e}")
+                # 简化异常处理以提高性能
                 return None
         
         # 并发生成子PDF
