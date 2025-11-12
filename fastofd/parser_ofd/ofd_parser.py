@@ -6,12 +6,7 @@
 # AUTHOR: reno
 # NOTE: ofd解析主流程
 
-import os
-import sys
-
 from fastofd.parser_ofd.file_ofd_parser import OFDFileParser
-
-sys.path.insert(0, "..")
 
 import traceback
 import base64

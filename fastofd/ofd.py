@@ -7,20 +7,17 @@
 # note:  ofd 基础类
 import base64
 import os
-import sys
 from io import BytesIO
 from typing import Union
-
-sys.path.insert(0, os.getcwd())
-sys.path.insert(0, "..")
 
 import fitz
 
 from PIL import Image
 from loguru import logger
 
-from fastofd.parser_ofd import OFDParser
-from fastofd.draw import DrawPDF, OFDWrite
+from fastofd.parser_ofd.ofd_parser import OFDParser
+from fastofd.draw.draw_pdf import DrawPDF
+from fastofd.draw.draw_ofd import OFDWrite
 
 
 class OFD(object):
@@ -70,7 +67,7 @@ class OFD(object):
 
         assert self.data, f"data is None"
         logger.info(f"to_pdf")
-        return DrawPDF(self.data, render_mode=render_mode)()
+        return DrawPDF(self.data, render_mode=render_mode).draw_pdf()
 
     def pdf2img(self, pdfbytes):
 

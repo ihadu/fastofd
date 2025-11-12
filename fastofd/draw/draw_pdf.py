@@ -752,7 +752,7 @@ class DrawPDF():
                 })
         self.draw_img( canvas, img_list, images, page_size)
         
-    def draw_pdf(self):
+    def draw_pdf_multithread(self):
         """
         生成PDF文件，使用并发处理优化性能
         由于ReportLab不是线程安全的，采用并发生成子PDF然后合并的策略
@@ -979,6 +979,95 @@ class DrawPDF():
         self.pdf_io.seek(0)
         
         logger.info(f"PDF合并完成，总耗时: {time.time() - start_draw_time:.2f}秒")
+    
+    def draw_pdf(self):
+        """
+        生成PDF文件，使用单线程处理
+        适用于页面数量较少的场景，避免多线程的开销
+        """
+        start_draw_time = time.time()
+        
+        # 收集所有页面任务
+        all_pages = []
+        for doc_id, doc in enumerate(self.data):
+            fonts = doc.get("fonts")
+            images = doc.get("images")
+            default_page_size = doc.get("default_page_size")
+            page_size_details = doc.get("page_size")
+            signatures_page_id = doc.get("signatures_page_id")
+            annotation_info = doc.get("annotation_info")
+            
+            for pg_no, page in doc.get("page_info").items():
+                # 确定页面尺寸
+                page_size_found = False
+                if len(page_size_details) > pg_no and page_size_details[pg_no]:
+                    page_size = page_size_details[pg_no]
+                    page_size_found = True
+                else:
+                    page_size = default_page_size
+                    logger.warning(f"页码 {pg_no} 未找到详细页面尺寸信息，使用默认尺寸")
+                
+                # 收集页面数据，用于后续处理
+                page_data = {
+                    'doc_id': doc_id,
+                    'pg_no': pg_no,
+                    'page': page,
+                    'fonts': fonts,
+                    'images': images,
+                    'page_size': page_size,
+                    'signatures_page_id': signatures_page_id,
+                    'annotation_info': annotation_info,
+                    'is_last_page': pg_no == len(doc.get("page_info")) - 1 and doc_id == len(self.data) - 1
+                }
+                all_pages.append(page_data)
+        
+        total_pages = len(all_pages)
+        logger.info(f"开始单线程处理 {total_pages} 页")
+        
+        # 使用单线程方式处理
+        c = canvas.Canvas(self.pdf_io)
+        c.setAuthor(self.author)
+        
+        for page_data in all_pages:
+            page = page_data['page']
+            fonts = page_data['fonts']
+            images = page_data['images']
+            page_size = page_data['page_size']
+            pg_no = page_data['pg_no']
+            
+            # 设置页面尺寸
+            c.setPageSize((page_size[2] * self.OP, page_size[3] * self.OP))
+            
+            # 写入图片
+            if page.get("img_list"):
+                self.draw_img(c, page.get("img_list"), images, page_size)
+            
+            # 写入文本
+            if page.get("text_list"):
+                self.draw_chars(c, page.get("text_list"), fonts, page_size)
+            
+            # 绘制线条
+            if page.get("line_list"):
+                self.draw_line(c, page.get("line_list"), page_size)
+            
+            # 绘制签章
+            if page_data['signatures_page_id']:
+                self.draw_signature(c, page_data['signatures_page_id'].get(pg_no), page_size)
+            
+            # 绘制注释
+            if page_data['annotation_info'] and pg_no in page_data['annotation_info']:
+                self.draw_annotation(c, page_data['annotation_info'].get(pg_no), images, page_size)
+            
+            # 显示下一页（除了最后一页）
+            if not page_data['is_last_page']:
+                c.showPage()
+        
+        # 保存PDF
+        c.save()
+        # 将self.pdf_io指针移到开始位置并返回PDF字节数据
+        self.pdf_io.seek(0)
+        logger.info(f"PDF内容已保存，单线程绘制总耗时: {time.time() - start_draw_time:.2f}秒")
+        return self.pdf_io.getvalue()
 
     def __call__(self):
         start_time = time.time()
