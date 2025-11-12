@@ -282,7 +282,7 @@ class DrawPDF():
         # 计算原始矩形的宽和高
         x2 = x1 + img_width
         y2 = y1 + img_height
-        print(f"ori x1 {x1} y1 {y1} x2 {x2} y2 {y2} img_width {img_width} img_height {img_height}")
+        # print(f"ori x1 {x1} y1 {y1} x2 {x2} y2 {y2} img_width {img_width} img_height {img_height}")
         a = a/10
         d = d/10
         # 对左上角和右下角点进行变换
@@ -290,58 +290,71 @@ class DrawPDF():
         y1_new = b * x1 + d * y1 + (f)
         x2_new = a * x2 + c * y2 + (e)
         y2_new = b * x2 + d * y2 + (f)
-        print(f"x1_new {x1_new} y1_new {y1_new} x2_new {x2_new} y2_new {y2_new}")
+        # print(f"x1_new {x1_new} y1_new {y1_new} x2_new {x2_new} y2_new {y2_new}")
         # 计算变换后矩形的宽和高
         w_new = x2_new - x1_new
         h_new = y2_new - y1_new
 
-        print(f"原始矩形宽度: {img_width}, 高度: {img_height}")
-        print(f"变换后矩形宽度: {w_new}, 高度: {h_new}")
+        # print(f"原始矩形宽度: {img_width}, 高度: {img_height}")
+        # print(f"变换后矩形宽度: {w_new}, 高度: {h_new}")
         return x1_new, y1_new, w_new, h_new
 
     def draw_img(self, canvas, img_list, images, page_size):
         """写入图片"""
         c = canvas
+        # 用于存储已解码的图片，实现简单的图片缓存
+        decoded_images_cache = {}
+        
         for img_d in img_list:
-            image = images.get(img_d["ResourceID"])
+            resource_id = img_d["ResourceID"]
+            image = images.get(resource_id)
 
             if not image or image.get("suffix").upper() not in self.SupportImgType:
                 continue
+            
+            # 使用缓存减少重复解码
+            if resource_id not in decoded_images_cache:
+                imgbyte = base64.b64decode(image.get('imgb64'))
+                if not imgbyte:
+                    logger.error(f"{image['fileName']} is null")
+                    continue
+                
+                # 计算并缓存图片尺寸，避免创建不必要的ImageReader对象
+                with PILImage.open(BytesIO(imgbyte)) as img:
+                    img_width, img_height = img.size
+                    # 缓存图片数据和尺寸
+                    decoded_images_cache[resource_id] = {
+                        'imgbyte': imgbyte,
+                        'width': img_width,
+                        'height': img_height
+                    }
+            else:
+                # 使用缓存的尺寸信息
+                img_width = decoded_images_cache[resource_id]['width']
+                img_height = decoded_images_cache[resource_id]['height']
 
-            imgbyte = base64.b64decode(image.get('imgb64'))
-            if not imgbyte:
-                logger.error(f"{image['fileName']} is null")
-                continue
-
-            img = PILImage.open(BytesIO(imgbyte))
-            img_width, img_height = img.size
-            # img_width = img_width / self.OP *25.4
-            # img_height = img_height / self.OP *25.4
-            info = img.info
-            # print( f"ing info dpi {info.get('dpi')}")
-            # print(img_width, img_height)
-            imgReade = ImageReader(img)
             CTM = img_d.get('CTM')
-            # print("CTM", CTM)
-
             wrap_pos = img_d.get("wrap_pos")
-            # wrap_pos = img_d.get("wrap_pos")
             pos = img_d.get('pos')
-            # print("pos", pos,"wrap_pos", wrap_pos,"CTM", CTM)
-            # CTM =None
+
+            # 仅在需要绘制时创建ImageReader对象，并在使用后释放
             if CTM and not wrap_pos and page_size == pos:
                 x1_new, y1_new, w_new, h_new = self.compute_ctm(CTM, 0, 0, img_width, img_height)
                 pdf_pos = [pos[0] * self.OP, pos[1] * self.OP, pos[2] * self.OP, pos[3] * self.OP]
-                # print(f"pos: {pos} pdf_pos: {pdf_pos}")
 
                 x1_new = (pos[0] + x1_new) * self.OP
                 y1_new = (page_size[3] - y1_new) * self.OP
-                if w_new >pdf_pos[2]:
+                if w_new > pdf_pos[2]:
                     w_new = pdf_pos[2]
-                if h_new >pdf_pos[3]:
+                if h_new > pdf_pos[3]:
                     h_new = pdf_pos[3]
-                # print(f"写入 {x1_new} {y1_new} {w_new} {-h_new}")
-                c.drawImage(imgReade, x1_new, y1_new, w_new, -h_new, 'auto')
+                
+                # 在需要时才创建ImageReader，使用后会自动释放
+                with PILImage.open(BytesIO(decoded_images_cache[resource_id]['imgbyte'])) as img:
+                    imgReade = ImageReader(img)
+                    c.drawImage(imgReade, x1_new, y1_new, w_new, -h_new, 'auto')
+                    # 显式删除不再使用的对象
+                    del imgReade
             else:
                 x_offset = 0
                 y_offset = 0
@@ -354,21 +367,25 @@ class DrawPDF():
                     w = img_d.get('pos')[2] * self.OP
                     h = -img_d.get('pos')[3] * self.OP
 
-                    # print(x, y, w, h)
-                    c.drawImage(imgReade, x, y, w, h, 'auto')
+                    # 按需创建ImageReader
+                    with PILImage.open(BytesIO(decoded_images_cache[resource_id]['imgbyte'])) as img:
+                        imgReade = ImageReader(img)
+                        c.drawImage(imgReade, x, y, w, h, 'auto')
+                        del imgReade
                 elif pos:
-                    # print(f"page_size == pos :{page_size == pos} ")
                     x = pos[0] * self.OP
                     y = (page_size[3] - pos[1]) * self.OP
                     w = pos[2] * self.OP
                     h = -pos[3] * self.OP
 
-                    # print(x, y, w, h)
-                    # print("pos",pos[0],pos[1],pos[2]* self.OP,pos[3]* self.OP)
-                    # print(x2_new, -y2_new, w_new, h_new,)
-
-                    c.drawImage(imgReade, x, y, w, h, 'auto')
-                    # c.drawImage(imgReade,x2_new, -y2_new, w_new, h_new, 'auto')
+                    # 按需创建ImageReader
+                    with PILImage.open(BytesIO(decoded_images_cache[resource_id]['imgbyte'])) as img:
+                        imgReade = ImageReader(img)
+                        c.drawImage(imgReade, x, y, w, h, 'auto')
+                        del imgReade
+        
+        # 清理缓存，帮助垃圾回收
+        decoded_images_cache.clear()
 
     def draw_signature(self, canvas, signatures_page_list, page_size):
         """
