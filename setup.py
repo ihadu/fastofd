@@ -1,7 +1,7 @@
 
 import setuptools 
 # 直接设置版本号，避免在构建过程中导入fastofd包
-__version__ = "0.0.4"
+__version__ = "0.0.6"
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
  
@@ -21,7 +21,7 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     install_requires=[   ### 依赖包
-        "reportlab>=3.6.11",
+        "reportlab==3.6.11",
         "xmltodict>=0.13.0",
         "loguru>=0.7.2",
         "fontTools>=4.43.1",
