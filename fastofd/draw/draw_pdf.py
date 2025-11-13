@@ -12,6 +12,11 @@ import traceback
 from io import BytesIO
 import concurrent.futures
 import io
+import requests
+import os
+
+# 导入自定义的AI工具模块
+from .ai_utils import ImageDescriber
 
 from pypdf import PdfReader, PdfWriter
 from PIL import Image as PILImage
@@ -30,6 +35,8 @@ class DrawPDF():
     ofd 解析结果 绘制pdf
     OP ofd 单位转换
     """
+    
+
 
     def __init__(self, data, *args, **kwargs):
         assert data, "未输入ofd解析结果"
@@ -52,6 +59,24 @@ class DrawPDF():
         self.min_pages_per_chunk = kwargs.get('min_pages_per_chunk', 1)  # 每个子PDF的最小页数
         self.optimized_pages_per_chunk = kwargs.get('optimized_pages_per_chunk', 5)  # 优化性能的每块页数
         self.force_single_thread = kwargs.get('force_single_thread', False)  # 强制使用单线程模式
+        
+        # 初始化AI图片描述器
+        self.image_describer = ImageDescriber(
+            openai_api_key=kwargs.get('openai_api_key'),
+            openai_api_base=kwargs.get('openai_api_base'),
+            openai_model=kwargs.get('openai_model')
+        )
+        
+    def describe_image(self, img_b64, file_name):
+        """
+        使用AI多模态模型描述图片内容
+        :param img_b64: 图片的base64编码
+        :param file_name: 图片原始文件名
+        :return: 格式化的图片描述文本 [image:文件名]描述内容[image:文件名]
+        """
+        return self.image_describer.describe_image(img_b64, file_name)
+
+
 
     def draw_lines(my_canvas):
         """
@@ -386,6 +411,228 @@ class DrawPDF():
         
         # 清理缓存，帮助垃圾回收
         decoded_images_cache.clear()
+
+    def draw_img_by_txt(self, canvas, img_list, images, page_size):
+        """将图片转换为文本描述并写入PDF"""
+        c = canvas
+        
+        for img_d in img_list:
+            resource_id = img_d["ResourceID"]
+            image = images.get(resource_id)
+
+            if not image or image.get("suffix").upper() not in self.SupportImgType:
+                continue
+            
+            # 获取图片信息
+            img_b64 = image.get('imgb64')
+            file_name = image.get('fileName', f'image_{resource_id}')
+            
+            if not img_b64:
+                logger.error(f"{file_name} is null")
+                continue
+            
+            # 获取图片描述
+            img_description = self.describe_image(img_b64, file_name)
+            
+            # 计算文本绘制位置
+            CTM = img_d.get('CTM')
+            wrap_pos = img_d.get("wrap_pos")
+            pos = img_d.get('pos')
+            
+            # 设置文本位置（使用与原图片相同的位置）
+            x = 0
+            y = 0
+            img_width = 0
+            img_height = 0
+            
+            if pos:
+                img_width = pos[2] * self.OP
+                img_height = pos[3] * self.OP
+                
+                if CTM and not wrap_pos and page_size == pos:
+                    # 使用CTM计算位置
+                    # 为了简化，我们直接使用原位置的左上角
+                    x = pos[0] * self.OP
+                    y = (page_size[3] - pos[1]) * self.OP  # 从图片顶部开始
+                else:
+                    x_offset = 0
+                    y_offset = 0
+                    
+                    x = (pos[0] + x_offset) * self.OP
+                    y = (page_size[3] - (pos[1] + y_offset)) * self.OP  # 从图片顶部开始
+                    
+                    if wrap_pos:
+                        x = x + (wrap_pos[0] * self.OP)
+                        y = y - (wrap_pos[1] * self.OP)
+            
+            # 绘制文本描述
+            if pos:
+                # 确保文本不会超出页面边界
+                page_width = page_size[2] * self.OP
+                page_height = page_size[3] * self.OP
+                
+                # 计算可用宽度和高度
+                available_width = min(img_width, page_width - x - 20)  # 留20像素边距
+                available_height = min(img_height, y - 20)  # 留20像素边距
+                
+                if available_width <= 0 or available_height <= 0:
+                    continue
+                
+                # 动态调整字体大小以适应空间
+                font_size = 10
+                max_font_size = 12
+                min_font_size = 6
+                
+                def calculate_lines(text, font_name, font_size, max_width):
+                    """计算文本在指定字体大小和宽度下的行数"""
+                    lines = []
+                    words = text.split(' ')
+                    current_line = []
+                    
+                    for word in words:
+                        current_line.append(word)
+                        line_text = ' '.join(current_line)
+                        line_width = c.stringWidth(line_text, font_name, font_size)
+                        
+                        if line_width > max_width:
+                            # 如果是第一个单词就超过宽度，强制分割
+                            if len(current_line) == 1:
+                                # 逐个字符添加直到超过宽度
+                                temp_line = ''
+                                for char in word:
+                                    temp_line += char
+                                    temp_width = c.stringWidth(temp_line, font_name, font_size)
+                                    if temp_width > max_width:
+                                        lines.append(temp_line[:-1])
+                                        temp_line = char
+                                if temp_line:
+                                    lines.append(temp_line)
+                                current_line = []
+                            else:
+                                # 移除最后一个单词，将当前行添加到结果
+                                current_line.pop()
+                                lines.append(' '.join(current_line))
+                                current_line = [word]
+                    
+                    # 添加最后一行
+                    if current_line:
+                        lines.append(' '.join(current_line))
+                    
+                    return lines
+                
+                # 固定使用适中的字体大小，避免文本铺满页面
+                best_font_size = 9  # 使用固定的适中字体大小
+                c.setFont(self.init_font, best_font_size)
+                
+                # 计算行高，增加行间距以提高可读性
+                line_height = best_font_size * 1.5  # 增加行间距到1.5倍字体大小
+                
+                # 计算最大可显示行数，留有余地避免文本紧贴边缘
+                max_display_lines = int((available_height - 10) / line_height)  # 留10像素边距
+                if max_display_lines < 1:
+                    max_display_lines = 1
+                
+                # 处理Markdown格式，转换为适合PDF的纯文本
+                def process_markdown(markdown_text):
+                    """处理Markdown格式，转换为适合PDF渲染的纯文本"""
+                    import re
+                    
+                    # 替换标题为普通文本
+                    text = re.sub(r'^#{1,6}\s+(.*)$', r'\1', markdown_text, flags=re.MULTILINE)
+                    
+                    # 替换无序列表为带•的文本
+                    text = re.sub(r'^[-*+]\s+(.*)$', r'• \1', text, flags=re.MULTILINE)
+                    
+                    # 替换有序列表为带数字的文本
+                    text = re.sub(r'^(\d+)\.\s+(.*)$', r'\1. \2', text, flags=re.MULTILINE)
+                    
+                    # 移除粗体和斜体标记
+                    text = re.sub(r'[*_]{1,2}(.*?)[*_]{1,2}', r'\1', text)
+                    
+                    # 简单处理表格 - 转换为纯文本格式
+                    # 首先找到表格行
+                    table_pattern = re.compile(r'^\|.*\|$', re.MULTILINE)
+                    table_rows = table_pattern.findall(text)
+                    
+                    if table_rows:
+                        # 转换表格为纯文本
+                        table_text = ""
+                        for row in table_rows:
+                            # 去除前后的|，并分割单元格
+                            cells = [cell.strip() for cell in row.strip('|').split('|')]
+                            # 跳过分隔行
+                            if all(cell == '-' * len(cell) for cell in cells):
+                                continue
+                            # 合并单元格内容
+                            table_text += ' '.join(cells) + '\n'
+                        
+                        # 替换原表格内容
+                        text = table_pattern.sub('', text)
+                        text += table_text
+                    
+                    # 处理换行符
+                    text = text.replace('\n\n', '\n')  # 合并空行
+                    text = text.strip()
+                    
+                    return text
+                
+                # 处理Markdown格式
+                processed_text = process_markdown(img_description)
+                
+                # 分割文本为多行
+                all_lines = calculate_lines(processed_text, self.init_font, best_font_size, available_width)
+                
+                # 根据可用行数截断文本并添加省略号
+                display_lines = all_lines[:max_display_lines]
+                
+                # 如果文本被截断，在最后一行添加省略号
+                if len(all_lines) > max_display_lines and max_display_lines > 0:
+                    # 确保省略号不会导致行宽超过限制
+                    last_line = display_lines[-1]
+                    ellipsis = "..."
+                    while True:
+                        test_line = last_line[:-1] + ellipsis
+                        test_width = c.stringWidth(test_line, self.init_font, best_font_size)
+                        if test_width <= available_width or len(last_line) <= 5:
+                            break
+                        last_line = last_line[:-1]
+                    
+                    display_lines[-1] = last_line[:-len(ellipsis)] + ellipsis if len(last_line) > len(ellipsis) else ellipsis
+                
+                # 计算起始y坐标，使文本从图片区域顶部开始显示，留出边距
+                start_y = y - 5  # 从顶部向下5像素开始
+                
+                # 确保起始位置在页面内
+                if start_y < 20:
+                    start_y = 20
+                
+                # 绘制多行文本
+                current_y = start_y
+                for i, line in enumerate(display_lines):
+                    # 确保行在页面内
+                    if current_y < 20:
+                        break
+                    
+                    # 确保行宽不超过页面（最后一层防护）
+                    line_width = c.stringWidth(line, self.init_font, best_font_size)
+                    if line_width > page_width - x - 20:
+                        # 进一步分割超长行
+                        temp_line = ''
+                        for char in line:
+                            temp_line += char
+                            temp_width = c.stringWidth(temp_line, self.init_font, best_font_size)
+                            if temp_width > page_width - x - 20:
+                                c.drawString(x, current_y, temp_line[:-1])
+                                current_y -= line_height
+                                if current_y < 20:
+                                    break
+                                temp_line = char
+                        if temp_line and current_y >= 20:
+                            c.drawString(x, current_y, temp_line)
+                            current_y -= line_height
+                    else:
+                        c.drawString(x, current_y, line)
+                        current_y -= line_height
 
     def draw_signature(self, canvas, signatures_page_list, page_size):
         """
@@ -1051,6 +1298,9 @@ class DrawPDF():
             images = page_data['images']
             page_size = page_data['page_size']
             pg_no = page_data['pg_no']
+
+            # if pg_no != 27:
+            #     continue
             
             # 设置页面尺寸
             c.setPageSize((page_size[2] * self.OP, page_size[3] * self.OP))

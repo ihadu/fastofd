@@ -28,7 +28,8 @@ setuptools.setup(
         "PyMuPDF>=1.23.4",
         "pyasn1>=0.6.0",
         "lxml>=6.0.2",
-        "pypdf>=6.1.3"
+        "pypdf>=6.1.3",
+        "openai>=2.7.2"
                      ],
     python_requires='>=3.8',   
 )
