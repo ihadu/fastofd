@@ -292,44 +292,47 @@ class OFDParser(object):
         # 签章信息
         if signatures and (signatures_xml_obj := self.get_xml_obj(signatures[0])):
             logger.debug(f"signatures_xml_obj is {signatures_xml_obj } signatures is {signatures} ")
-            signatures_info = SignaturesFileParser(signatures_xml_obj)()
-            if signatures_info:  # 获取签章具体信息
-                for _, signatures_cell in signatures_info.items():
+            signatures_overview = SignaturesFileParser(signatures_xml_obj)()
+            if signatures_overview:  # 获取签章具体信息
+                for _, signatures_cell in signatures_overview.items():
                     # print(signatures_info)
                     BaseLoc = signatures_cell.get("BaseLoc")
                     signature_xml_obj = self.get_xml_obj(BaseLoc)
                     # print(BaseLoc)
                     prefix = BaseLoc.split("/")[0]
-                    signatures_info = SignatureFileParser(signature_xml_obj)(prefix=prefix)
-                    # print(signatures_info)
-                    logger.debug(f"signatures_info {signatures_info}")
-                    PageRef = signatures_info.get("PageRef")
-                    Boundary = signatures_info.get("Boundary")
-                    SignedValue = signatures_info.get("SignedValue")
-                    sing_page_no = page_id_map.get(PageRef)
-                    # print("self.file_tree",self.file_tree.keys)
-                    # print(page_id_map,PageRef)
-                    # print(SignedValue, self.get_xml_obj(SignedValue))
-                    # with open("b64.txt","w") as f:
-                    #     f.write(self.get_xml_obj(SignedValue))
-                    if signatures_page_id.get(sing_page_no):
-                        signatures_page_id[sing_page_no].append(
-                            {
-                                "sing_page_no": sing_page_no,
-                                "PageRef": PageRef,
-                                "Boundary": Boundary,
-                                "SignedValue": self.get_xml_obj(SignedValue),
-                            }
-                        )
-                    else:
-                        signatures_page_id[sing_page_no] = [
-                            {
-                                "sing_page_no": sing_page_no,
-                                "PageRef": PageRef,
-                                "Boundary": Boundary,
-                                "SignedValue": self.get_xml_obj(SignedValue),
-                            }
-                        ]
+                    signatures_list = SignatureFileParser(signature_xml_obj)(prefix=prefix)
+                    # print(signatures_list)
+                    logger.debug(f"signatures_list {signatures_list}")
+                    
+                    # 遍历处理每个签章信息
+                    for signature_info in signatures_list:
+                        PageRef = signature_info.get("PageRef")
+                        Boundary = signature_info.get("Boundary")
+                        SignedValue = signature_info.get("SignedValue")
+                        sing_page_no = page_id_map.get(PageRef)
+                        # print("self.file_tree",self.file_tree.keys)
+                        # print(page_id_map,PageRef)
+                        # print(SignedValue, self.get_xml_obj(SignedValue))
+                        # with open("b64.txt","w") as f:
+                        #     f.write(self.get_xml_obj(SignedValue))
+                        if signatures_page_id.get(sing_page_no):
+                            signatures_page_id[sing_page_no].append(
+                                {
+                                    "sing_page_no": sing_page_no,
+                                    "PageRef": PageRef,
+                                    "Boundary": Boundary,
+                                    "SignedValue": self.get_xml_obj(SignedValue),
+                                }
+                            )
+                        else:
+                            signatures_page_id[sing_page_no] = [
+                                {
+                                    "sing_page_no": sing_page_no,
+                                    "PageRef": PageRef,
+                                    "Boundary": Boundary,
+                                    "SignedValue": self.get_xml_obj(SignedValue),
+                                }
+                            ]
 
         # 注释信息 按照页码信息
         annotation_info = {}

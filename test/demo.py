@@ -59,26 +59,26 @@ def test_ofd2(file_path, output_dir=None):
     ofd = OFD()  # 初始化OFD 工具类
     ofd.read(ofdb64, save_xml=True, xml_name=f"{file_prefix}_xml")  # 读取ofdb64
     # print("ofd.data", ofd.data) # ofd.data 为程序解析结果
-    pdf_bytes = ofd.to_pdf(render_mode='char')  # 转pdf
-    # img_np = ofd.to_jpg()  # 转图片
+    # pdf_bytes = ofd.to_pdf(render_mode='char', page_list=[0, 1], with_signature=True)  # 转pdf
+    img_np = ofd.to_jpg(render_mode='char', page_list=[0, 1], with_signature=False)  # 转图片
     ofd.del_data()
 
-    # 确定输出路径
-    if output_dir:
-        # 确保输出目录存在
-        os.makedirs(output_dir, exist_ok=True)
-        output_file = os.path.join(output_dir, f"{file_prefix}.pdf")
-    else:
-        output_file = f"{file_prefix}.pdf"
+    # # 确定输出路径
+    # if output_dir:
+    #     # 确保输出目录存在
+    #     os.makedirs(output_dir, exist_ok=True)
+    #     output_file = os.path.join(output_dir, f"{file_prefix}.pdf")
+    # else:
+    #     output_file = f"{file_prefix}.pdf"
 
-    with open(output_file, "wb") as f:
-        f.write(pdf_bytes)
+    # with open(output_file, "wb") as f:
+    #     f.write(pdf_bytes)
 
     # 处理图片输出（如果需要）
-    # if img_np:
-    #     for idx, img in enumerate(img_np):
-    #         img_path = os.path.join(output_dir, f"{file_prefix}_{idx}.jpg") if output_dir else f"{file_prefix}_{idx}.jpg"
-    #         img.save(img_path)
+    if img_np:
+        for idx, img in enumerate(img_np):
+            img_path = os.path.join(output_dir, f"{file_prefix}_{idx}.jpg") if output_dir else f"{file_prefix}_{idx}.jpg"
+            img.save(img_path)
 
 
 def test_pdf2(file_path):
@@ -101,7 +101,7 @@ def test_pdf2(file_path):
 
 if __name__ == "__main__":
 
-    file_path = rf"/Volumes/PSSD/ofd/湖北圳康安后勤管理服务有限公司.ofd"
+    file_path = rf"/Users/mac/Downloads/湖北振鹏建设工程有限公司.ofd"
     # 指定输出目录为当前目录下的output文件夹
     output_dir = os.path.join(os.getcwd(), "output")
     

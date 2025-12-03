@@ -46,6 +46,9 @@ class DrawPDF():
         # 文本渲染模式：'line'（整行写入优先，超出边界回退到字符写入）或'char'（始终使用字符写入）
         self.render_mode = kwargs.get('render_mode', 'line')
         
+        self.page_list = kwargs.get('page_list', None)  # None表示绘制所有页面
+        self.with_signature = kwargs.get('with_signature', True) # 是否绘制签名
+
         # 并发处理相关配置参数
         self.max_workers = kwargs.get('max_workers', None)  # None表示自动计算
         self.single_thread_threshold = kwargs.get('single_thread_threshold', 10)  # 页面数量阈值，低于此值使用单线程
@@ -1004,6 +1007,21 @@ class DrawPDF():
         """
         start_draw_time = time.time()
         
+         # 处理页码列表参数
+        if self.page_list is None:
+            # 如果未指定页码列表，则处理所有页面
+            process_all_pages = True
+            target_pages = None
+        else:
+            process_all_pages = False
+            # 如果是单个页码，则转换为列表
+            if isinstance(self.page_list, int):
+                target_pages = [self.page_list]
+            else:
+                target_pages = self.page_list
+            logger.info(f"仅处理指定页码: {target_pages}")
+        
+
         # 收集所有页面任务
         all_pages = []
         for doc_id, doc in enumerate(self.data):
@@ -1015,6 +1033,9 @@ class DrawPDF():
             annotation_info = doc.get("annotation_info")
             
             for pg_no, page in doc.get("page_info").items():
+                # 如果指定了页码列表，且当前页码不在列表中，则跳过
+                if not process_all_pages and pg_no not in target_pages:
+                    continue
                 # 确定页面尺寸
                 page_size_found = False
                 if len(page_size_details) > pg_no and page_size_details[pg_no]:
@@ -1039,6 +1060,9 @@ class DrawPDF():
                 all_pages.append(page_data)
         
         total_pages = len(all_pages)
+        if total_pages == 0:
+            logger.warning("没有找到匹配的页码进行处理")
+            # 返回空PDF或适当的错误处理
         logger.info(f"开始单线程处理 {total_pages} 页")
         
         # 使用单线程方式处理
@@ -1068,7 +1092,7 @@ class DrawPDF():
                 self.draw_line(c, page.get("line_list"), page_size)
             
             # 绘制签章
-            if page_data['signatures_page_id']:
+            if self.with_signature and page_data['signatures_page_id']:
                 self.draw_signature(c, page_data['signatures_page_id'].get(pg_no), page_size)
             
             # 绘制注释

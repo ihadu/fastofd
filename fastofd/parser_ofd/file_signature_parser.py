@@ -39,7 +39,7 @@ class SignatureFileParser(FileParserBase):
     """
 
     def __call__(self, prefix=""):
-        info = {}
+        info = []  # 改为列表，支持多个签章
         StampAnnot_res: list = []
         StampAnnot_res_key = "ofd:StampAnnot"
 
@@ -52,12 +52,13 @@ class SignatureFileParser(FileParserBase):
         # print("SignedValue_res", SignedValue_res)
         # print("prefix", prefix)
         if StampAnnot_res:
+            signed_value_path = f"{prefix}/{SignedValue_res[0]}" if SignedValue_res else f"{prefix}/SignedValue.dat"
             for i in StampAnnot_res:
-                info = {
+                info.append({
                     "PageRef": i.get("@PageRef"),  # page id
                     "Boundary": i.get("@Boundary"),
                     "ID": i.get("@ID"),
-                    "SignedValue": f"{prefix}/{SignedValue_res[0]}" if SignedValue_res else f"{prefix}/SignedValue.dat",
-                }
+                    "SignedValue": signed_value_path,
+                })
 
         return info

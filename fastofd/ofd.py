@@ -62,12 +62,12 @@ class OFD(object):
         ofd_byte = OFDWrite()(pdfbyte, optional_text=optional_text)
         return ofd_byte
 
-    def to_pdf(self, render_mode='line'):
+    def to_pdf(self, render_mode='line', page_list=None, with_signature=True):
         """return ofdbytes"""
 
         assert self.data, f"data is None"
         logger.info(f"to_pdf")
-        return DrawPDF(self.data, render_mode=render_mode).draw_pdf()
+        return DrawPDF(self.data, render_mode=render_mode, page_list=page_list, with_signature=with_signature).draw_pdf()
 
     def pdf2img(self, pdfbytes):
 
@@ -106,13 +106,13 @@ class OFD(object):
         data = OFDParser(None).img2data(imglist)
         return DrawPDF(data)()
 
-    def to_jpg(self, format="jpg"):
+    def to_jpg(self, render_mode='line', page_list=None, with_signature=True):
         """
         return pil list
         """
         assert self.data, f"data is None"
         image_list = []
-        pdfbytes = self.to_pdf()
+        pdfbytes = self.to_pdf(render_mode=render_mode, page_list=page_list, with_signature=with_signature)
         image_list = self.pdf2img(pdfbytes)
         return image_list
 
